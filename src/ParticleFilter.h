@@ -1,177 +1,76 @@
 #pragma once
-
 #include <Arduino.h>
 #include <eigen.h>
 #include <Eigen/Dense>
-#include "Utils.h"
+#include <vector>
+#include "MultivariateNormal.h"
 
 /**
  * @class ParticleFilter
- * @brief Discrete-time particle filter (Sequential Monte Carlo).
+ * @brief Generic particle filter using MultivariateNormal for sampling
  *
- * Implements a generic particle filter for nonlinear state estimation using
- * importance sampling and systematic resampling based on effective sample size (ESS).
- *
- * The filter operates in three stages:
- *  - predict(): propagate particles using a dynamics model
- *  - update(): update particle weights using a measurement likelihood
- *  - resampleESS(): resample particles when weight degeneracy is detected
- *
- * The user must provide:
- *  - A dynamics model: x <- f(x, dt)
- *  - A measurement likelihood model: w = p(z | x)
- *
- * Designed for embedded / Arduino-class systems.
+ * This particle filter supports:
+ * - N-dimensional state
+ * - Any number of particles
+ * - Sampling from a MultivariateNormal as motion model
+ * - Weight update via likelihood evaluation
  */
 class ParticleFilter {
 public:
     /**
-     * @brief Construct a new ParticleFilter.
-     *
-     * Allocates memory for particles and initializes all weights uniformly.
-     *
-     * @param stateDim Dimension of the system state vector
-     * @param measDim  Dimension of the measurement vector
-     * @param numParticles Number of particles
+     * @brief Construct a particle filter
+     * @param num_particles Number of particles
+     * @param state_dim Dimension of state vector
+     * @param precision Float or double precision for MultivariateNormal
      */
-    ParticleFilter(int stateDim, int measDim, int numParticles);
+    ParticleFilter(int num_particles, int state_dim, Precision precision = Precision::Double);
 
     /**
-     * @brief Destroy the ParticleFilter and free allocated memory.
+     * @brief Initialize particles with mean and covariance
+     * @param mean Mean state
+     * @param cov Covariance of initial distribution
+     * @return True if initialization succeeds
      */
-    ~ParticleFilter();
+    bool init(const Eigen::VectorXd& mean, const Eigen::MatrixXd& cov);
 
     /**
-     * @brief Set the system dynamics model.
-     *
-     * The dynamics model propagates a particle forward in time:
-     *   x <- f(x, dt)
-     *
-     * If not set, predict() has no effect.
-     *
-     * @param m Dynamics model function
+     * @brief Predict step: propagate particles using multivariate normal noise
+     * @param motion_mean Mean displacement for all particles
+     * @param motion_cov Covariance of motion noise
      */
-    void setDynamicsModel(EstimationUtils::DynamicsModel m);
+    void predict(const Eigen::VectorXd& motion_mean, const Eigen::MatrixXd& motion_cov);
 
     /**
-     * @brief Set the measurement likelihood model.
-     *
-     * The measurement model computes the (unnormalized) importance weight:
-     *   w = p(z | x)
-     *
-     * If not set, update() has no effect.
-     *
-     * @param m Measurement likelihood function
+     * @brief Update particle weights using observation likelihood
+     * @param observation Observation vector
+     * @param obs_cov Covariance of observation noise
      */
-    void setMeasurementModel(EstimationUtils::MeasurementModel m);
+    void update(const Eigen::VectorXd& observation, const Eigen::MatrixXd& obs_cov);
 
     /**
-     * @brief Initialize particles from a Gaussian distribution.
-     *
-     * Each particle state is initialized as:
-     *   x_i(d) = mean(d) + N(0, stddev(d)^2)
-     *
-     * All particle weights are reset to a uniform distribution.
-     *
-     * @param mean Initial state mean
-     * @param stddev Initial state standard deviation (per state dimension)
+     * @brief Resample particles using systematic resampling
      */
-    void init(const EstimationUtils::StateVec& mean,
-              const EstimationUtils::StateVec& stddev);
+    void resample();
 
     /**
-     * @brief Propagate all particles through the dynamics model.
-     *
-     * Calls the dynamics model once per particle.
-     * If no dynamics model is set, this function returns immediately.
-     *
-     * @param dt Time step
+     * @brief Get estimated mean of current particles
+     * @return Mean state vector
      */
-    void predict(float dt);
+    Eigen::VectorXd estimate() const;
 
     /**
-     * @brief Update particle weights using a measurement.
-     *
-     * Computes importance weights using the measurement likelihood model
-     * and normalizes them.
-     *
-     * If the total weight is zero or non-finite, the update is considered
-     * failed and all particle weights are reset to a uniform distribution.
-     *
-     * This function does NOT automatically resample.
-     *
-     * @param z Measurement vector
+     * @brief Get number of particles
      */
-    void update(const EstimationUtils::MeasVec& z);
-
-    /**
-     * @brief Resample particles based on effective sample size (ESS).
-     *
-     * Uses systematic resampling when:
-     *   ESS <= essThresholdRatio * numParticles
-     *
-     * After resampling, all particle weights are reset to 1 / numParticles.
-     *
-     * @param essThresholdRatio Resampling threshold ratio in (0, 1]
-     */
-    void resampleESS(float essThresholdRatio);
-
-    /**
-     * @brief Compute the weighted mean of the particle states.
-     *
-     * @return Estimated state mean
-     */
-    EstimationUtils::StateVec mean() const;
-
-    /**
-     * @brief Compute the effective sample size (ESS).
-     *
-     * ESS is defined as:
-     *   ESS = 1 / sum(w_i^2)
-     *
-     * A small ESS indicates particle degeneracy.
-     *
-     * @return Effective sample size
-     */
-    float effectiveSampleSize() const;
-
-    /**
-     * @brief Reset all particle weights to a uniform distribution.
-     *
-     * Sets:
-     *   w_i = 1 / numParticles
-     *
-     * Does not modify particle states.
-     */
-    void resetWeights();
+    int numParticles() const { return num_particles_; }
 
 private:
-    /**
-     * @brief Internal particle representation.
-     */
-    struct Particle
-    {
-        EstimationUtils::StateVec x; /**< Particle state */
-        float w;                     /**< Particle weight */
-    };
+    int num_particles_;
+    int state_dim_;
+    Precision precision_;
 
-    int _stateDim;     /**< State vector dimension */
-    int _measDim;      /**< Measurement vector dimension */
-    int _numParticles; /**< Number of particles */
+    std::vector<Eigen::VectorXd> particles_;
+    std::vector<double> weights_;
 
-    Particle* _particles;     /**< Current particle set */
-    Particle* _newParticles;  /**< Temporary particle set used during resampling */
-    float*    _cdf;           /**< Cumulative distribution for systematic resampling */
-
-    EstimationUtils::DynamicsModel    _dynamicsModel; /**< State transition model */
-    EstimationUtils::MeasurementModel _measModel;     /**< Measurement likelihood model */
-
-    /**
-     * @brief Generate a standard normal random variable.
-     *
-     * Uses the Box–Muller transform with Arduino's random().
-     *
-     * @return Sample from N(0, 1)
-     */
-    float randn() const;
+    // Temporary MultivariateNormal for sampling motion noise or observation likelihood
+    MultivariateNormal mvn_;
 };

@@ -1,75 +1,49 @@
-#include <Arduino.h>
-#include <eigen.h>
-#include <Eigen/Dense>
 #include "ParticleFilter.h"
-#include "Utils.h"
+#include "MultivariateNormal.h"
 
-constexpr int STATE_DIM = 4;  // x, y, vx, vy
-constexpr int MEAS_DIM  = 2;  // x, y measurements
-constexpr int NUM_PARTICLES = 1000;
+ParticleFilter pf(100, 2, Precision::Double);
 
-ParticleFilter pf(STATE_DIM, MEAS_DIM, NUM_PARTICLES);
-
-// ---------------- Dynamics Model ----------------
-void dynamicsModel(Eigen::Ref<EstimationUtils::StateVec> x, float dt) {
-    x(0) += x(2) * dt;
-    x(1) += x(3) * dt;
-}
-
-// ---------------- Measurement Model ----------------
-float measurementModel(
-    const Eigen::Ref<const EstimationUtils::StateVec>& x,
-    const Eigen::Ref<const EstimationUtils::MeasVec>& z)
-{
-    Eigen::Vector2f h = x.head(2);  // expected measurement
-    Eigen::Vector2f err = z - h;
-
-    // Example covariance matrix
-    Eigen::Matrix2f R;
-    R << 0.25, 0.05,
-         0.05, 0.20;
-
-    Eigen::Matrix2f Rinv = R.inverse();
-    float exponent = -0.5f * err.transpose() * Rinv * err;
-    return expf(exponent); // proportional likelihood
-}
-
-// ---------------- Setup ----------------
 void setup() {
     Serial.begin(115200);
-    delay(1000);
+    while(!Serial);
 
-    pf.setDynamicsModel(dynamicsModel);
-    pf.setMeasurementModel(measurementModel);
+    Eigen::VectorXd init_mean(2);
+    init_mean << 0.0, 0.0;
 
-    EstimationUtils::StateVec mean(STATE_DIM);
-    EstimationUtils::StateVec stddev(STATE_DIM);
+    Eigen::MatrixXd init_cov(2,2);
+    init_cov << 1.0, 0.0,
+                0.0, 1.0;
 
-    mean << 0, 0, 1, 1;
-    stddev << 0.1, 0.1, 0.5, 0.5;
-    pf.init(mean, stddev);
+    if (!pf.init(init_mean, init_cov)) {
+        Serial.println("Failed to initialize particle filter!");
+        while(1);
+    }
 
-    Serial.println("Particle filter initialized.");
+    Serial.println("Particle filter initialized");
 }
 
-// ---------------- Loop ----------------
 void loop() {
-    EstimationUtils::MeasVec z(MEAS_DIM);
-    z << 5.0 + ((float)random(-50,50)/100.0f),
-         5.0 + ((float)random(-50,50)/100.0f);
+    // Simulate a motion step
+    Eigen::VectorXd motion_mean(2);
+    motion_mean << 0.1, 0.0;  // move right
+    Eigen::MatrixXd motion_cov = 0.05 * Eigen::MatrixXd::Identity(2,2);
 
-    pf.predict(0.1f);
-    pf.update(z);
-    pf.resampleESS(0.5f);
+    pf.predict(motion_mean, motion_cov);
 
-    auto est = pf.mean();
+    // Simulate an observation
+    Eigen::VectorXd obs(2);
+    obs << 1.0, 0.2;  // measured state
+    Eigen::MatrixXd obs_cov = 0.1 * Eigen::MatrixXd::Identity(2,2);
 
-    Serial.print("Est: ");
-    for (int i = 0; i < STATE_DIM; i++) {
-        Serial.print(est(i), 3); Serial.print(" ");
-    }
-    Serial.print(" ESS: ");
-    Serial.println(pf.effectiveSampleSize(), 1);
+    pf.update(obs, obs_cov);
 
-    delay(50);
+    // Resample
+    pf.resample();
+
+    // Estimate state
+    Eigen::VectorXd est = pf.estimate();
+    Serial.print("Estimated state: ");
+    Serial.print(est(0)); Serial.print(", "); Serial.println(est(1));
+
+    delay(500);
 }
